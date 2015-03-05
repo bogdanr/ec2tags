@@ -34,7 +34,7 @@ processInstances() {
             echo $line | sed -e 's/{//' -e 's/}//' -e 's/:/=/g' >> $TMPFILE
         done
     if [ -f $TMPFILE ]; then
-        echo "Setting tags for the resources of the ${line:15:10} instance"
+        echo "Setting tags for the resources of ${line:15:10}"
         aws ec2 create-tags --profile=$PROFILE --resources $RESOURCES --tags `cat $TMPFILE`
         unlink $TMPFILE
     fi
@@ -42,12 +42,32 @@ processInstances() {
   done
 }
 
+processSnapshots() {
+  TSNAP="/tmp/$$.tsnap"
+  TVOL="/tmp/$$.tvol"
+
+  aws ec2 describe-snapshots --owner-id self | jq -c '.Snapshots[] | {VolumeId: .VolumeId, SnapshotId: .SnapshotId, Timestamp: .StartTime}' > $TSNAP
+  aws --profile=$PROFILE ec2 describe-volumes | jq -c '.Volumes[] | {VolumeId: .VolumeId , Tags: .Tags[]}' > $TVOL
+
+  # With this loop we'll set a tag for all snapshots at once that correspond to the given volume
+  while read line; do
+    VolumeId=`echo $line | jq '.VolumeId'`
+    snapshots=(`cat $TSNAP | grep $VolumeId | cut -d "\"" -f 8` )
+    tags=`echo $line | jq -c '.Tags' | sed -e 's/{//' -e 's/}//' -e 's/:/=/g'`
+    if [[ ! -z $snapshots ]]; then
+      echo "Setting tags for ${snapshots[*]}"
+      aws ec2 create-tags --profile=$PROFILE --resources ${snapshots[*]} --tags $tags
+    fi
+  done < $TVOL
+
+  unlink $TSNAP
+  unlink $TVOL
+}
 
 for PROFILE in ${PROFILES[*]}; do
+  echo "Processing the $PROFILE profile on `date +%F' '%T`" >> /var/log/ec2tags.log
   processInstances >> /var/log/ec2tags.log
+  processSnapshots >> /var/log/ec2tags.log
 done
-
-#Perhaps we can use this for additional checks
-#aws ec2 describe-tags | jq '.Tags[]' -c
 
 
